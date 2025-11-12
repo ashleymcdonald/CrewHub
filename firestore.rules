@@ -1,0 +1,86 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isManager() {
+      return isAuthenticated() &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager';
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      // Allow users to read their own profile
+      allow read: if isAuthenticated() && isOwner(userId);
+
+      // Allow managers to read all user profiles
+      allow read: if isManager();
+
+      // Allow users to update their own profile (except role)
+      allow update: if isOwner(userId) &&
+                       request.resource.data.role == resource.data.role;
+
+      // Only allow user creation during signup (handled by security rules and backend)
+      allow create: if isOwner(userId);
+    }
+
+    // Jobs collection
+    match /jobs/{jobId} {
+      // Managers can create, read, update, and delete jobs
+      allow create, update, delete: if isManager();
+
+      // Staff can read jobs they're assigned to
+      allow read: if isManager() ||
+                     (isAuthenticated() &&
+                      request.auth.uid in resource.data.assignedStaff);
+
+      // Validate job data on write
+      allow create, update: if request.resource.data.keys().hasAll([
+        'title', 'description', 'location', 'dateTime',
+        'requiredStaff', 'assignedStaff', 'status', 'createdBy'
+      ]);
+    }
+
+    // Assignments collection
+    match /assignments/{assignmentId} {
+      // Managers can create, read, update, and delete assignments
+      allow create, update, delete: if isManager();
+
+      // Staff can read their own assignments
+      allow read: if isManager() ||
+                     (isAuthenticated() &&
+                      resource.data.userId == request.auth.uid);
+
+      // Staff can update status of their own assignments
+      allow update: if isAuthenticated() &&
+                       resource.data.userId == request.auth.uid &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'confirmedAt', 'completedAt', 'notes', 'updatedAt']);
+    }
+
+    // Notifications collection
+    match /notifications/{notificationId} {
+      // Users can read their own notifications
+      allow read: if isAuthenticated() &&
+                     resource.data.userId == request.auth.uid;
+
+      // Users can update their own notifications (mark as read)
+      allow update: if isAuthenticated() &&
+                       resource.data.userId == request.auth.uid &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+
+      // Only managers can create notifications
+      allow create: if isManager();
+
+      // Managers can delete any notification
+      allow delete: if isManager();
+    }
+  }
+}
